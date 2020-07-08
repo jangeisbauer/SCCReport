@@ -54,60 +54,80 @@ if ($useKeyVault)
     $clientSecret = (Get-AzKeyVaultSecret -VaultName $keyvaultname -Name $keyvaultsecretname).SecretValueText;
 }
 else{
-    $clientSecret = Read-Host "Enter client secret for app id: $appId"
+    $clientSecret = Read-Host "Enter client secret for app id: $appId";
 }
 # #########################################################################################################################################
 
+$currentAccessToken = "NOTYETSET";
+$currentAccessTokenExpiration = [System.DateTime]::UtcNow;
+$origin = New-Object -Type DateTime -ArgumentList 1970, 1, 1, 0, 0, 0, 0
 
 # #########################################################################################################################################
 # O365 Management API Functions
 # #########################################################################################################################################
-function Get-MgmtAccessToken($appId, $domain, $clientSecret) {
-    $resource = 'https://manage.office.com' 
-    $clientSecret = [uri]::EscapeDataString($clientSecret)
-    $uri = "https://login.windows.net/{0}/oauth2/token" -f $domain
-    $body = "grant_type=client_Credentials&resource=$resource&client_id=$appId&client_secret=$clientSecret"
-    $response = Invoke-RestMethod -Uri $uri -ContentType "application/x-www-form-urlencoded" -Body $body -Method "POST"
-    $AccessToken = $response.access_token
-    return $AccessToken
+<#
+.SYNOPSIS
+Get an access token and renew if needed
+
+.DESCRIPTION
+Get an access token from the V1 AAD endpoint. Access tokens are only valid (by default for 60 minutes)
+
+.EXAMPLE
+https://docs.microsoft.com/en-us/office/office-365-management-api/get-started-with-office-365-management-apis
+#>
+function Get-MgmtAccessToken() {
+    if ($currentAccessTokenExpiration -lt [System.DateTime]::UtcNow){
+        $resource = "https://manage.office.com";
+        $encodedClientSecret = [uri]::EscapeDataString($clientSecret);
+        $uri = "https://login.microsoftonline.com/$tenantId/oauth2/token";
+        $body = "grant_type=client_Credentials&resource=$resource&client_id=$appId&client_secret=$encodedClientSecret"
+        $response = Invoke-RestMethod -Uri $uri -ContentType "application/x-www-form-urlencoded" -Body $body -Method "POST"
+        $currentAccessToken = $response.access_token
+        $currentAccessTokenExpiration = $origin.AddSeconds($response.expires_on)
+    }
+    return $currentAccessToken;
 }
-function New-AuditLogSubscription( $tenantId, $AccessToken) {
+function New-AuditLogSubscription() {
+    $AccessToken = Get-MgmtAccessToken;
     $uri = "https://manage.office.com/api/v1.0/$($tenantId)/activity/feed/subscriptions/start?contentType=Audit.General&PublisherIdentifier=$($tenantId)"
     $response = Invoke-RestMethod -Uri $uri -ContentType "application/x-www-form-urlencoded" -Headers @{'authorization'="Bearer $($AccessToken)"} -Method "POST"
     return $response
 }
-function Stop-AuditLogSubscription( $tenantId, $AccessToken) {
+function Stop-AuditLogSubscription() {
+    $AccessToken = Get-MgmtAccessToken;
     $uri = "https://manage.office.com/api/v1.0/$($tenantId)/activity/feed/subscriptions/stop?contentType=Audit.General&PublisherIdentifier=$($tenantId)"
     $response = Invoke-RestMethod -Uri $uri -ContentType "application/x-www-form-urlencoded" -Headers @{'authorization'="Bearer $($AccessToken)"} -Method "POST"
     return $response
 }
-function Get-AuditLogSubscriptions( $tenantId, $AccessToken) {
+function Get-AuditLogSubscriptions() {
+    $AccessToken = Get-MgmtAccessToken;
     $uri = "https://manage.office.com/api/v1.0/$($tenantId)/activity/feed/subscriptions/list?PublisherIdentifier=$($tenantId)"
     $response = Invoke-RestMethod -Uri $uri -ContentType "application/x-www-form-urlencoded" -Headers @{'authorization'="Bearer $($AccessToken)"} -Method "GET"
     return $response
 }
-function Get-AuditLogSubscriptionContent( $tenantId, $AccessToken, $startTime, $endTime ) {
+function Get-AuditLogSubscriptionContent($startTime, $endTime ) {
+    $AccessToken = Get-MgmtAccessToken;
     $uri = "https://manage.office.com/api/v1.0/$($tenantId)/activity/feed/subscriptions/content?contentType=Audit.General&startTime=$($startTime)&endTime=$($endTime)"
     $response = Invoke-RestMethod -Uri $uri -ContentType "application/x-www-form-urlencoded" -Headers @{'authorization'="Bearer $($AccessToken)"} -Method "GET"
     return $response
 }
-function Get-AuditLogSubscriptionContentBlob( $tenantId, $contentUri, $AccessToken ) {
+function Get-AuditLogSubscriptionContentBlob($contentUri) {
+    $AccessToken = Get-MgmtAccessToken;
     $uri = $contentUri
     $response = Invoke-RestMethod -Uri $uri -ContentType "application/x-www-form-urlencoded" -Headers @{'authorization'="Bearer $($AccessToken)"} -Method "GET"
     return $response
 }
-function Get-AuditLogEntries( $tenantId, $AccessToken, $startTime, $endTime) {
-    $Content = Get-AuditLogSubscriptionContent -tenantId $tenantId -AccessToken $AccessToken -startTime $startTime -endTime $endTime
+function Get-AuditLogEntries($startTime, $endTime) {
+    $Content = Get-AuditLogSubscriptionContent -startTime $startTime -endTime $endTime
     $allBlobContent = @()
     foreach($item in $Content){
-        $blobContent = Get-AuditLogSubscriptionContentBlob -tenantId $tenantId -AccessToken $AccessToken -contentUri $($item.contentUri)
+        $blobContent = Get-AuditLogSubscriptionContentBlob -contentUri $($item.contentUri)
         $allBlobContent += $blobContent
     }
     return $allBlobContent
 }
 
-$AccessToken = Get-MgmtAccessToken -appId $appId -domain $domain -clientSecret $clientSecret
-New-AuditLogSubscription -tenantId $tenantId -AccessToken $AccessToken
+New-AuditLogSubscription
 
 $endTime = Get-Date
 $endTimeString = Get-Date $endTime.ToUniversalTime() -Format "yyyy-MM-ddTHH:mm:ss"
@@ -117,7 +137,7 @@ $startTimeString = Get-Date $startTime -Format "yyyy-MM-ddTHH:mm:ss"
 write-host "Retrieving log entries created between $startTimeString and $endTimeString (if you have choosen too many days to report, go, grab a coffee)"
 
 # Results
-$Entries = Get-AuditLogEntries -tenantId $tenantId -AccessToken $AccessToken -startTime $startTimeString -endTime $endTimeString
+$Entries = Get-AuditLogEntries -startTime $startTimeString -endTime $endTimeString
 $allInvestigations = $Entries | Where-Object{$_.investigationname -ne $null}
 $allCustomInvestigations = @()
 
@@ -179,6 +199,6 @@ $fileName = $(get-date -f yyyy-MM-dd) + "-SCC-InvestigationsExport.csv"
 $allCustomInvestigations | ConvertTo-Csv > $fileName
 
 # don't know if this is neccessary ... anyway
-Stop-AuditLogSubscription -tenantId $tenantId -AccessToken $AccessToken
+Stop-AuditLogSubscription
 
 write-host "done."
