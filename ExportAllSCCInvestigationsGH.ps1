@@ -13,22 +13,29 @@
 # Credits to: https://github.com/ssugar/Blog/blob/c34608c3165023d35c65f08899c7ef18b711460c/PowerBIUsage/Scripts/Get-PowerBIUsage.ps1
 # #########################################################################################################################################
 # Variables
-# Set how many days from today you want to report backward
-# Default "-1" --> report last 24 hours
 
+#use keyvault or get secret per Read-Host (for debugging)
 $useKeyVault = $true;
 
-$DaysBack = -1
-# tenant id
+#specify start and and date attention: only 7 days back are possible! as documentent for start and end toime here: https://docs.microsoft.com/en-us/office/office-365-management-api/office-365-management-activity-api-reference#list-available-content 
+$startTime = [System.DateTime]::UtcNow; #start now #TODO
+$endTime = $startTime.AddHours(-24);#move 24 hour back #TODO
+
 # after az login check with this command for tenant id and subscription id: Get-AzSubscription
-$tenantId = "55ccd7c0-7dd0-414c-8fbb-a8469c7dde2d"
-$subscriptionId = "bbb7594a-30e2-4928-9631-0588321da565"
-$keyvaultname = "prd-DGKM-mgmntapi-weu-kv"
-$keyvaultsecretname = "AADClientSecret"
-# set app details / get secret
-$appId = "bc86c145-3d2f-435a-9293-39832c7ceb59"
-$domain = 'tenant.com' #office atp target tenant
+$tenantId = "55ccd7c0-7dd0-414c-8fbb-a8469c7dde2d" #TODO
+$subscriptionId = "bbb7594a-30e2-4928-9631-0588321da565" #TODO
+#kevault
+$keyvaultname = "prd-DGKM-mgmntapi-weu-kv" #TODO
+$keyvaultsecretname = "AADClientSecret" #TODO
+
+# AAD application id matching the secret to use for auth
+$appId = "bc86c145-3d2f-435a-9293-39832c7ceb59" #TODO
+
+#static
+$workIntervall = 1; #in hours
 $mgmtSubscriptionWorkload = "Audit.General";
+$mgmtAuditLogRecordType = 64; # AirInvestigation = Automated incident response (AIR) events. https://docs.microsoft.com/en-us/office/office-365-management-api/office-365-management-activity-api-schema#auditlogrecordtype
+
 
 # #########################################################################################################################################
 # get secret from azure key vault 
@@ -106,9 +113,10 @@ function Get-AuditLogSubscriptions() {
     $response = Invoke-RestMethod -Uri $uri -ContentType "application/x-www-form-urlencoded" -Headers @{'authorization'="Bearer $($AccessToken)"} -Method "GET"
     return $response
 }
-function Get-AuditLogSubscriptionContent($startTime, $endTime ) {
+function Get-AuditLogSubscriptionContent($start, $end ) {
     $AccessToken = Get-MgmtAccessToken;
-    $uri = "https://manage.office.com/api/v1.0/$($tenantId)/activity/feed/subscriptions/content?contentType=$mgmtSubscriptionWorkload&startTime=$($startTime)&endTime=$($endTime)"
+    #logically teh script is doing a count down (start is more current and end is in the past), but the API is working more logical (start will be earlier than end) so we switch here
+    $uri = "https://manage.office.com/api/v1.0/$($tenantId)/activity/feed/subscriptions/content?contentType=$mgmtSubscriptionWorkload&startTime=$($end)&endTime=$($start)"
     $response = Invoke-RestMethod -Uri $uri -ContentType "application/x-www-form-urlencoded" -Headers @{'authorization'="Bearer $($AccessToken)"} -Method "GET"
     return $response
 }
@@ -118,8 +126,9 @@ function Get-AuditLogSubscriptionContentBlob($contentUri) {
     $response = Invoke-RestMethod -Uri $uri -ContentType "application/x-www-form-urlencoded" -Headers @{'authorization'="Bearer $($AccessToken)"} -Method "GET"
     return $response
 }
-function Get-AuditLogEntries($startTime, $endTime) {
-    $Content = Get-AuditLogSubscriptionContent -startTime $startTime -endTime $endTime
+function Get-AuditLogEntries($start, $end) {
+    $dateFormat = "yyyy-MM-ddTHH:mm";
+    $Content = Get-AuditLogSubscriptionContent -start $start.ToString($dateFormat) -end $end.ToString($dateFormat)
     $allBlobContent = @()
     foreach($item in $Content){
         $blobContent = Get-AuditLogSubscriptionContentBlob -contentUri $($item.contentUri)
@@ -140,16 +149,25 @@ else{
     Write-Host "Subscription for workload $mgmtSubscriptionWorkload is already setup";
 }
 
-$endTime = Get-Date
-$endTimeString = Get-Date $endTime.ToUniversalTime() -Format "yyyy-MM-ddTHH:mm:ss"
-$startTime = ($endTime.ToUniversalTime()).AddDays($DaysBack)
-$startTimeString = Get-Date $startTime -Format "yyyy-MM-ddTHH:mm:ss"
+#List available content states that one should only return content from max 24 hours
+#https://docs.microsoft.com/en-us/office/office-365-management-api/office-365-management-activity-api-reference#list-available-content
+#To report more work in 24 hour chunks
+write-host "Retrieving log entries created between $startTime and $endTime (if you have choosen too many days to report, go, grab a coffee)"
 
-write-host "Retrieving log entries created between $startTimeString and $endTimeString (if you have choosen too many days to report, go, grab a coffee)"
+$currentEnd = $startTime.AddHours($workIntervall * -1);
+$currentStart = $startTime;
+$Entries = @();
+while ($currentStart -gt $endTime) {
+    if ($currentEnd -lt $endTime){
+        $currentEnd = $endTime; # if current end (due to intervall) is smaller then desired end, set the desired end to not overquery ;)
+    }
+    $Entries += Get-AuditLogEntries -start $currentStart -end $currentEnd
+    $currentStart = $currentEnd;
+    $currentEnd = $currentStart.AddHours($workIntervall * -1);
+}
 
 # Results
-$Entries = Get-AuditLogEntries -startTime $startTimeString -endTime $endTimeString
-$allInvestigations = $Entries | Where-Object{$_.investigationname -ne $null}
+$allInvestigations = $Entries | Where-Object{ $_.RecordType -eq $mgmtAuditLogRecordType -and $_.InvestigationName -ne $null}
 $allCustomInvestigations = @()
 
 # Looping through the results and join them together to get a nice overview
