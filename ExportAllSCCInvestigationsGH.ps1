@@ -28,6 +28,7 @@ $keyvaultsecretname = "AADClientSecret"
 # set app details / get secret
 $appId = "bc86c145-3d2f-435a-9293-39832c7ceb59"
 $domain = 'tenant.com' #office atp target tenant
+$mgmtSubscriptionWorkload = "Audit.General";
 
 # #########################################################################################################################################
 # get secret from azure key vault 
@@ -89,13 +90,13 @@ function Get-MgmtAccessToken() {
 }
 function New-AuditLogSubscription() {
     $AccessToken = Get-MgmtAccessToken;
-    $uri = "https://manage.office.com/api/v1.0/$($tenantId)/activity/feed/subscriptions/start?contentType=Audit.General&PublisherIdentifier=$($tenantId)"
+    $uri = "https://manage.office.com/api/v1.0/$($tenantId)/activity/feed/subscriptions/start?contentType=$mgmtSubscriptionWorkload&PublisherIdentifier=$($tenantId)"
     $response = Invoke-RestMethod -Uri $uri -ContentType "application/x-www-form-urlencoded" -Headers @{'authorization'="Bearer $($AccessToken)"} -Method "POST"
     return $response
 }
 function Stop-AuditLogSubscription() {
     $AccessToken = Get-MgmtAccessToken;
-    $uri = "https://manage.office.com/api/v1.0/$($tenantId)/activity/feed/subscriptions/stop?contentType=Audit.General&PublisherIdentifier=$($tenantId)"
+    $uri = "https://manage.office.com/api/v1.0/$($tenantId)/activity/feed/subscriptions/stop?contentType=$mgmtSubscriptionWorkload&PublisherIdentifier=$($tenantId)"
     $response = Invoke-RestMethod -Uri $uri -ContentType "application/x-www-form-urlencoded" -Headers @{'authorization'="Bearer $($AccessToken)"} -Method "POST"
     return $response
 }
@@ -107,7 +108,7 @@ function Get-AuditLogSubscriptions() {
 }
 function Get-AuditLogSubscriptionContent($startTime, $endTime ) {
     $AccessToken = Get-MgmtAccessToken;
-    $uri = "https://manage.office.com/api/v1.0/$($tenantId)/activity/feed/subscriptions/content?contentType=Audit.General&startTime=$($startTime)&endTime=$($endTime)"
+    $uri = "https://manage.office.com/api/v1.0/$($tenantId)/activity/feed/subscriptions/content?contentType=$mgmtSubscriptionWorkload&startTime=$($startTime)&endTime=$($endTime)"
     $response = Invoke-RestMethod -Uri $uri -ContentType "application/x-www-form-urlencoded" -Headers @{'authorization'="Bearer $($AccessToken)"} -Method "GET"
     return $response
 }
@@ -127,7 +128,17 @@ function Get-AuditLogEntries($startTime, $endTime) {
     return $allBlobContent
 }
 
-New-AuditLogSubscription
+Write-Host "Check if a subscription for workload $mgmtSubscriptionWorkload is already started";
+$currentsubs = Get-AuditLogSubscriptions | Where-Object {$_.contentType -eq $mgmtSubscriptionWorkload -and $_.status -eq "enabled"}
+if ($null -eq $currentsubs){
+    Write-Host "Setup new subscription for workload $mgmtSubscriptionWorkload";
+    New-AuditLogSubscription
+    #read more here regaring availability of content: https://docs.microsoft.com/en-us/office/office-365-management-api/office-365-management-activity-api-reference#stop-a-subscription
+    Write-Host "Setup new subscription for workload $mgmtSubscriptionWorkload setup! Attention: Normaly it takes about 24 hour to fill with content!" -ForegroundColor Yellow;
+} 
+else{
+    Write-Host "Subscription for workload $mgmtSubscriptionWorkload is already setup";
+}
 
 $endTime = Get-Date
 $endTimeString = Get-Date $endTime.ToUniversalTime() -Format "yyyy-MM-ddTHH:mm:ss"
@@ -198,7 +209,8 @@ foreach($investigation in $allInvestigations)
 $fileName = $(get-date -f yyyy-MM-dd) + "-SCC-InvestigationsExport.csv"
 $allCustomInvestigations | ConvertTo-Csv > $fileName
 
-# don't know if this is neccessary ... anyway
-Stop-AuditLogSubscription
+Write-Host "The current subscription for workload $mgmtSubscriptionWorkload will NOT be stopped. If you stop a subscription any events created until a restart will be lost!" -ForegroundColor Yellow;
+#Read more: https://docs.microsoft.com/en-us/office/office-365-management-api/office-365-management-activity-api-reference#stop-a-subscription
+#Stop-AuditLogSubscription
 
 write-host "done."
