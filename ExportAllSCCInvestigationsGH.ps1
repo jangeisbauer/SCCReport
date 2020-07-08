@@ -8,23 +8,54 @@
 #
 # Version: 0.1 (2020-5-25)
 # Author: @janvonkirchheim
-# 
+# Version: 0.2 (2020-7-08)
+# Author: @marcoscheel
 # Credits to: https://github.com/ssugar/Blog/blob/c34608c3165023d35c65f08899c7ef18b711460c/PowerBIUsage/Scripts/Get-PowerBIUsage.ps1
 # #########################################################################################################################################
 # Variables
 # Set how many days from today you want to report backward
 # Default "-1" --> report last 24 hours
+
+$useKeyVault = $true;
+
 $DaysBack = -1
-# tenant name of KeyVault 
-$tenantNameKV = "tenant.com"
+# tenant id
+# after az login check with this command for tenant id and subscription id: Get-AzSubscription
+$tenantId = "55ccd7c0-7dd0-414c-8fbb-a8469c7dde2d"
+$subscriptionId = "bbb7594a-30e2-4928-9631-0588321da565"
+$keyvaultname = "prd-DGKM-mgmntapi-weu-kv"
+$keyvaultsecretname = "AADClientSecret"
 # set app details / get secret
-$appId = '533242343245'
-$tenantId = 'a3423423424bf'
+$appId = "bc86c145-3d2f-435a-9293-39832c7ceb59"
 $domain = 'tenant.com' #office atp target tenant
+
+# #########################################################################################################################################
 # get secret from azure key vault 
 # connect to azure
-Connect-AzureRmAccount -Tenant $tenantNameKV
-$clientSecret = (Get-AzureKeyVaultSecret -vaultName "keyvault" -name "key").SecretValueText
+$clientSecret = "NOTYETSET";
+if ($useKeyVault)
+{
+    #check for az modules
+    $AzAccountsPsm = Get-Module -Name Az.Accounts -ListAvailable;
+    $AzKeyVaultPsm = Get-Module -Name Az.KeyVault -ListAvailable;
+    if ($null -eq $AzAccountsPsm -or $null -eq $AzKeyVaultPsm){
+        Write-Host "Your are missing modules. Install Az Module (needed: Install-Module Az.Accounts + Install-Module Az.KeyVault" -ForegroundColor Red;
+        exit;
+    }
+    else{
+        Import-Module -Name Az.Accounts;
+        Import-Module -Name Az.KeyVault;
+    }
+    $isloggedin = Get-AzContext -ListAvailable | Where-Object { $_.Tenant.Id -eq $tenantId -and $_.Subscription.Id -eq $subscriptionId };
+    if ($null -eq $isloggedin){
+        #use device authentication to reuse previously authenticated sessions
+        Login-AzAccount -UseDeviceAuthentication -TenantId $tenantId -Subscription $subscriptionId ;
+    }
+    $clientSecret = (Get-AzKeyVaultSecret -VaultName $keyvaultname -Name $keyvaultsecretname).SecretValueText;
+}
+else{
+    $clientSecret = Read-Host "Enter client secret for app id: $appId"
+}
 # #########################################################################################################################################
 
 
